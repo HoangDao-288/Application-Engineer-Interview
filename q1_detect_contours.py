@@ -129,6 +129,116 @@ def clamp_box(
     return x0, y0, x1 - x0, y1 - y0
 
 
+def split_merged_components(
+    candidates: List[Dict[str, Any]],
+    labels: np.ndarray,
+    image_shape: Tuple[int, ...],
+    padding: int,
+    scaled_min_area: float,
+) -> List[Dict[str, Any]]:
+    """Split only abnormally large connected components.
+
+    Several Part1 scenes contain switches in physical contact.  A plain
+    connected-components pass correctly finds their dark plastic, but treats a
+    touching cluster as one object.  We estimate the area of one switch from
+    the smaller candidates in *that image*, then progressively erode only a
+    component whose area represents two or more switches.  A narrow contact
+    breaks before the main switch bodies do.  The selected pieces are expanded
+    by the erosion radius again so their bounding regions cover the full body.
+
+    This is intentionally conservative: a component is split only when an
+    erosion level produces exactly the area-derived number of substantial
+    pieces.  It avoids turning a single roller/lever switch into false objects.
+    """
+
+    if len(candidates) < 2:
+        return candidates
+
+    # The lower half is dominated by isolated switches; the upper half may
+    # contain the merged groups we are trying to repair.
+    areas = sorted(float(candidate["contour_area"]) for candidate in candidates)
+    reference_area = float(np.median(areas[: max(1, len(areas) // 2)]))
+    if reference_area <= 0:
+        return candidates
+
+    split_candidates: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        estimated_count = int(round(candidate["contour_area"] / reference_area))
+        if estimated_count < 2:
+            split_candidates.append(candidate)
+            continue
+
+        component_x, component_y, component_w, component_h = candidate["component_bbox"]
+        component_label = int(candidate["component_label"])
+        component_mask = (
+            labels[
+                component_y : component_y + component_h,
+                component_x : component_x + component_w,
+            ]
+            == component_label
+        ).astype(np.uint8) * 255
+
+        # A piece must remain large enough to be switch material, rather than
+        # a detached terminal, screw, or noise fragment.  The fixed 5--39px
+        # range was validated on both supplied resolutions; unlike a global
+        # erosion, it is used only on oversized clusters.
+        minimum_piece_area = max(scaled_min_area * 0.25, reference_area * 0.18)
+        chosen_parts: List[Tuple[int, int, int, int, int]] | None = None
+        chosen_kernel = 0
+        for kernel_size in range(5, 40, 2):
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
+            )
+            eroded = cv2.erode(component_mask, kernel, iterations=1)
+            _, _, part_stats, _ = cv2.connectedComponentsWithStats(
+                eroded, connectivity=8
+            )
+            parts: List[Tuple[int, int, int, int, int]] = []
+            for stat in part_stats[1:]:
+                if float(stat[4]) < minimum_piece_area:
+                    continue
+                # connectedComponentsWithStats rows are always
+                # (x, y, width, height, area).  Explicit unpacking preserves
+                # that fixed-length tuple type for Pylance.
+                part_x, part_y, part_w, part_h, part_area = (
+                    int(value) for value in stat
+                )
+                parts.append((part_x, part_y, part_w, part_h, part_area))
+            if len(parts) == estimated_count:
+                chosen_parts = parts
+                chosen_kernel = kernel_size
+                break
+
+        if chosen_parts is None:
+            split_candidates.append(candidate)
+            continue
+
+        restore_padding = padding + chosen_kernel // 2
+        for part_x, part_y, part_w, part_h, part_area in chosen_parts:
+            box = clamp_box(
+                component_x + part_x,
+                component_y + part_y,
+                part_w,
+                part_h,
+                image_shape,
+                restore_padding,
+            )
+            split_candidates.append(
+                {
+                    "bbox": [int(value) for value in box],
+                    "contour_area": float(part_area),
+                    "fill_ratio": float(part_area) / float(max(1, part_w * part_h)),
+                    "aspect_ratio": max(part_w, part_h) / float(max(1, min(part_w, part_h))),
+                }
+            )
+
+    # Internal connected-component data must not leak into the public JSON.
+    for candidate in split_candidates:
+        candidate.pop("component_label", None)
+        candidate.pop("component_bbox", None)
+    return split_candidates
+
+
 def detect_switches(
     image: np.ndarray,
     min_area: float = 800.0,
@@ -173,7 +283,7 @@ def detect_switches(
     # preserve objects inside the closed dark outline of a tray.
     close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, close_kernel, iterations=1)
-    _, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
 
     roi_area = float(roi.shape[0] * roi.shape[1])
     # The input contains both 800px and 1080px high images.  Scale pixel
@@ -186,7 +296,7 @@ def detect_switches(
 
     # stats[0] describes background; every following row is one foreground
     # component: x, y, width, height, area.
-    for x, y, w, h, component_area in stats[1:]:
+    for component_label, (x, y, w, h, component_area) in enumerate(stats[1:], start=1):
         contour_area = float(component_area)
         # Components touching the working ROI boundary belong to the tray,
         # camera frame, or ROI crop rather than to a switch.  The ROI has a
@@ -223,8 +333,19 @@ def detect_switches(
                 "contour_area": contour_area,
                 "fill_ratio": fill_ratio,
                 "aspect_ratio": aspect_ratio,
+                "component_label": component_label,
+                "component_bbox": [int(x + x0), int(y + y0), int(w), int(h)],
             }
         )
+
+    # Labels are ROI-relative while candidate boxes above are full-image
+    # relative.  Pass a full-size label image so split_merged_components can
+    # use the stored full-image component coordinates directly.
+    full_labels = np.zeros(image.shape[:2], dtype=labels.dtype)
+    full_labels[y0:y1, x0:x1] = labels
+    candidates = split_merged_components(
+        candidates, full_labels, image.shape, padding, scaled_min_area
+    )
 
     # Non-maximum suppression removes near-duplicate contours generated by
     # small fragments of the same switch. Score by contour area.
