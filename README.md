@@ -27,3 +27,19 @@ python script/run_q1_batch.py
 The detector segments dark switch bodies, uses connected components to retain
 objects enclosed by tray contours, and scales its geometric filters for both
 image resolutions in the supplied set. Results are written to `output/q1/`.
+
+## Question 2: switch type classification
+
+Exploration of Part2-3 identifies two variants: `roller_level` has the round
+external roller/lever, while `no_level` does not. Images `001`--`050` are the
+roller variant and `051`--`101` are the no-level variant. The HOG + RBF-SVM
+classifier augments the training images with rotations and reports a predicted
+label and probability for a single crop.
+
+```bash
+python q2_classify_type.py --train --evaluate
+python q2_classify_type.py --input data/Part2-3/001.png
+```
+
+The model is saved as `models/q2_hog_svm.joblib`. The second command trains it
+automatically if it has not been created yet.
