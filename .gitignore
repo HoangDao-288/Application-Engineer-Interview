@@ -10,6 +10,9 @@ output/
 # Interview data is supplied separately and is too large to version here
 data/
 
+# Interview requirements
+assignment_requirements/
+
 # Editor and operating-system files
 .vscode/
 .DS_Store
