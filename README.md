@@ -37,3 +37,26 @@ python q2_classify_type.py --input data/Part2-3/001.png
 
 The model is saved as `models/q2_hog_svm.joblib`. The second command trains it
 automatically if it has not been created yet.
+
+## Question 3: interactive desktop application
+
+Install the dependencies (including PyQt5), then launch:
+
+```bash
+python q3_app.py
+```
+
+Use **Open Image** (or drag a scene image onto the image area), press **Run
+Detection**, and click a labelled bounding box or an item in the detected
+switch list.  The app crops the selected Q1 region and sends that crop to the
+same HOG + SVM classifier used in Q2.  The result panel shows the switch ID,
+predicted type, and confidence. Clicking outside every box explicitly reports
+that no switch was selected. If the saved Q2 model is absent, it is trained
+automatically from `data/Part2-3/` on the first selected switch.
+
+Scroll the mouse wheel over the image to zoom around the pointer. Hold the
+left mouse button and drag to pan; use **Fit Image** to restore the full-image
+view.
+
+The app explicitly selects PyQt5's Qt platform plugins after importing
+OpenCV, so it avoids the common OpenCV/PyQt `xcb` plugin conflict on Linux.

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import cv2
 import joblib
@@ -257,24 +257,54 @@ def train_and_save(train_dir: Path, model_path: Path) -> None:
     print(f"Saved model: {model_path}")
 
 
-def predict(image_path: Path, model_path: Path, train_dir: Path, retrain: bool) -> None:
+def classify_image(
+    image: np.ndarray,
+    model_path: Path = DEFAULT_MODEL_PATH,
+    train_dir: Path = DEFAULT_DATA_DIR,
+    retrain: bool = False,
+) -> Tuple[str, float, Dict[str, float]]:
+    """Classify one BGR crop and return ``(label, confidence, probabilities)``.
+
+    This is the programmatic API used by Q3.  Keeping feature extraction and
+    model loading here guarantees that the desktop application uses exactly
+    the same classifier as the command-line solution.
+    """
+
+    if image is None or image.size == 0:
+        raise ValueError("Cannot classify an empty switch crop")
     if retrain or not model_path.is_file():
-        print("No trained model found; training HOG + SVM model first.")
         train_and_save(train_dir, model_path)
 
     artifact = joblib.load(model_path)
+    if not isinstance(artifact, dict) or "model" not in artifact:
+        raise ValueError(f"Invalid Q2 model artifact: {model_path}")
     classifier = artifact["model"]
-    feature_row = hog_features(read_image(image_path)).reshape(1, -1)
-    probabilities = classifier.predict_proba(feature_row)[0]
+    probabilities = classifier.predict_proba(hog_features(image).reshape(1, -1))[0]
     classes = classifier.classes_
     best_index = int(np.argmax(probabilities))
+    probability_by_label = {
+        str(label): float(probability)
+        for label, probability in zip(classes, probabilities)
+    }
+    return str(classes[best_index]), float(probabilities[best_index]), probability_by_label
+
+
+def predict(image_path: Path, model_path: Path, train_dir: Path, retrain: bool) -> None:
+    if retrain or not model_path.is_file():
+        print("No trained model found; training HOG + SVM model first.")
+    label, confidence, probabilities = classify_image(
+        read_image(image_path), model_path, train_dir, retrain
+    )
 
     print(f"Input: {image_path}")
-    print(f"Predicted type: {classes[best_index]}")
-    print(f"Confidence: {probabilities[best_index]:.2%}")
+    print(f"Predicted type: {label}")
+    print(f"Confidence: {confidence:.2%}")
     print(
         "Probabilities: "
-        + ", ".join(f"{label}={probability:.2%}" for label, probability in zip(classes, probabilities))
+        + ", ".join(
+            f"{class_name}={probability:.2%}"
+            for class_name, probability in probabilities.items()
+        )
     )
 
 
