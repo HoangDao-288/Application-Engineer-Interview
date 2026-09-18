@@ -18,12 +18,6 @@ Run the detector on one image:
 python q1_detect_contours.py --input data/Part1/01.png --output output/q1 --save-mask
 ```
 
-Run it on the full Part1 dataset:
-
-```bash
-python script/run_q1_batch.py
-```
-
 The detector segments dark switch bodies, uses connected components to retain
 objects enclosed by tray contours, and scales its geometric filters for both
 image resolutions in the supplied set. Results are written to `output/q1/`.
@@ -39,9 +33,7 @@ label and probability for a single crop.
 ```bash
 python q2_classify_type.py --train --evaluate
 python q2_classify_type.py --input data/Part2-3/001.png
-python script/run_q2_batch.py
 ```
 
 The model is saved as `models/q2_hog_svm.joblib`. The second command trains it
-automatically if it has not been created yet. The batch script validates every
-provided crop and writes `output/q2/batch_predictions.json`.
+automatically if it has not been created yet.
