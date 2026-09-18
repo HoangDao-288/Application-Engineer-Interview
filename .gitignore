@@ -7,6 +7,9 @@ venv/
 # Generated visualizations and JSON/mask artifacts
 output/
 
+# Local helper scripts
+script/
+
 # Interview data is supplied separately and is too large to version here
 data/
 
