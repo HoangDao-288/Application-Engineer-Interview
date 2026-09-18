@@ -127,7 +127,7 @@ class SwitchInspector(QMainWindow):
         self.box_items: Dict[int, QGraphicsRectItem] = {}
         self.selected_id: Optional[int] = None
 
-        self.setWindowTitle("Microswitch Inspector — Q3")
+        self.setWindowTitle("Microswitch Inspector")
         self.resize(1280, 760)
         self._build_ui()
         self._show_status("Open a Part1 image to begin.")
