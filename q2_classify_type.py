@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Q2 - Classify a cropped microswitch as ``no_level`` or ``roller_level``.
 
-The Part2-3 samples are visually ordered by type: 001--050 contain the
-external round roller/lever mechanism (``roller_level``), while 051--101 do
+The Part2-3 samples are visually ordered by type: 001--051 contain the
+external round roller/lever mechanism (``roller_level``), while 052--101 do
 not (``no_level``).  The classifier uses grayscale HOG descriptors and an RBF
 SVM.  During training each image is rotated to make HOG robust to the freely
 rotated crops in the supplied data and in Q3.
@@ -89,9 +89,9 @@ def label_from_filename(path: Path) -> str:
     except ValueError as exc:
         raise ValueError(f"Expected a numeric Part2-3 filename, got: {path.name}") from exc
 
-    if 1 <= image_id <= 50:
+    if 1 <= image_id <= 51:
         return "roller_level"
-    if 51 <= image_id <= 101:
+    if 52 <= image_id <= 101:
         return "no_level"
     raise ValueError(
         f"{path.name} is outside the labelled Part2-3 range 001.png--101.png"

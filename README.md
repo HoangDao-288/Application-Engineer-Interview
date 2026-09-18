@@ -31,8 +31,8 @@ image resolutions in the supplied set. Results are written to `output/q1/`.
 ## Question 2: switch type classification
 
 Exploration of Part2-3 identifies two variants: `roller_level` has the round
-external roller/lever, while `no_level` does not. Images `001`--`050` are the
-roller variant and `051`--`101` are the no-level variant. The HOG + RBF-SVM
+external roller/lever, while `no_level` does not. Images `001`--`051` are the
+roller variant and `052`--`101` are the no-level variant. The HOG + RBF-SVM
 classifier augments the training images with rotations and reports a predicted
 label and probability for a single crop.
 
