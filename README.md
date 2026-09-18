@@ -39,7 +39,9 @@ label and probability for a single crop.
 ```bash
 python q2_classify_type.py --train --evaluate
 python q2_classify_type.py --input data/Part2-3/001.png
+python script/run_q2_batch.py
 ```
 
 The model is saved as `models/q2_hog_svm.joblib`. The second command trains it
-automatically if it has not been created yet.
+automatically if it has not been created yet. The batch script validates every
+provided crop and writes `output/q2/batch_predictions.json`.
