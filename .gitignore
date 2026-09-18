@@ -1,0 +1,15 @@
+# Python bytecode and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated visualizations and JSON/mask artifacts
+output/
+
+# Interview data is supplied separately and is too large to version here
+data/
+
+# Editor and operating-system files
+.vscode/
+.DS_Store
