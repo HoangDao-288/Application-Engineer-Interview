@@ -21,9 +21,13 @@ python q1_detect_contours.py --input data/Part1/01.png --output output/q1 --save
 The detector segments dark switch bodies, uses connected components to retain
 objects enclosed by tray contours, and scales its geometric filters for both
 image resolutions in the supplied set. When touching switches form an
-abnormally large connected component, it adaptively erodes only that component
-to separate its substantial switch bodies before drawing their boxes. Results
-are written to `output/q1/`.
+abnormally large connected component, it first uses an area-distribution gap
+to identify the cluster, then adaptively erodes that component. If the
+overlap is too tight for erosion, seeded watershed separates the foreground
+into substantial switch bodies before drawing their boxes. The detector also
+uses resolution-aware tray ROIs and thresholding: low-resolution scenes use a
+tighter tray crop, while high-resolution scenes retain the lower tray edge and
+discard small roller/terminal fragments. Results are written to `output/q1/`.
 
 ## Question 2: switch type classification
 

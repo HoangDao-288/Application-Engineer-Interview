@@ -111,10 +111,19 @@ def get_detection_roi(image: np.ndarray) -> Tuple[int, int, int, int]:
     """
 
     height, width = image.shape[:2]
-    x0 = int(0.24 * width)
-    x1 = int(0.84 * width)
-    y0 = int(0.02 * height)
-    y1 = int(0.99 * height)
+    if height <= 900:
+        # The low-resolution scenes have a much thicker visible tray/frame.
+        # Keeping that frame in the mask creates one giant component that
+        # swallows several switches.
+        x0 = int(0.32 * width)
+        x1 = int(0.73 * width)
+        y0 = int(0.23 * height)
+        y1 = int(0.90 * height)
+    else:
+        x0 = int(0.24 * width)
+        x1 = int(0.84 * width)
+        y0 = int(0.02 * height)
+        y1 = height
     return x0, y0, x1, y1
 
 
@@ -154,19 +163,37 @@ def split_merged_components(
     if len(candidates) < 2:
         return candidates
 
-    # The lower half is dominated by isolated switches; the upper half may
-    # contain the merged groups we are trying to repair.
     areas = sorted(float(candidate["contour_area"]) for candidate in candidates)
-    reference_area = float(np.median(areas[: max(1, len(areas) // 2)]))
+    if len(areas) < 3 or areas[0] <= 0:
+        return candidates
+
+    # Isolated switches can have noticeably different visible areas because
+    # of rotation and perspective.  A fixed multiple of the median therefore
+    # classifies legitimate large switches as merged ones.  Instead, find the
+    # largest gap in the sorted area distribution.  In these scenes the
+    # normal-switch cluster ends before a clear jump to touching clusters.
+    median_area = float(np.median(areas))
+    normal_areas = [
+        area for area in areas
+        if 0.55 * median_area <= area <= 1.45 * median_area
+    ]
+    reference_area = float(np.median(normal_areas or areas))
+    largest_normal_area = float(max(normal_areas or areas))
     if reference_area <= 0:
         return candidates
 
     split_candidates: List[Dict[str, Any]] = []
     for candidate in candidates:
-        estimated_count = int(round(candidate["contour_area"] / reference_area))
-        if estimated_count < 2:
+        candidate_area = float(candidate["contour_area"])
+        split_multiplier = 1.45 if image_shape[0] <= 900 else 1.65
+        if candidate_area < split_multiplier * largest_normal_area:
             split_candidates.append(candidate)
             continue
+        # The largest normal object is a better denominator than the median:
+        # it keeps the count at two for two overlapping, differently oriented
+        # switches while avoiding over-splitting large single switches.
+        max_split_count = 6 if image_shape[0] <= 900 else 3
+        estimated_count = max(2, min(max_split_count, int(round(candidate_area / reference_area))))
 
         component_x, component_y, component_w, component_h = candidate["component_bbox"]
         component_label = int(candidate["component_label"])
@@ -209,12 +236,29 @@ def split_merged_components(
                 chosen_kernel = kernel_size
                 break
 
-        if chosen_parts is None:
+        if chosen_parts is not None:
+            parts_to_add = [
+                (
+                    part_x,
+                    part_y,
+                    part_w,
+                    part_h,
+                    part_area,
+                    padding + chosen_kernel // 2,
+                )
+                for part_x, part_y, part_w, part_h, part_area in chosen_parts
+            ]
+        else:
+            parts_to_add = [
+                (*part, padding)
+                for part in _watershed_parts(component_mask, estimated_count, minimum_piece_area)
+            ]
+
+        if len(parts_to_add) != estimated_count:
             split_candidates.append(candidate)
             continue
 
-        restore_padding = padding + chosen_kernel // 2
-        for part_x, part_y, part_w, part_h, part_area in chosen_parts:
+        for part_x, part_y, part_w, part_h, part_area, restore_padding in parts_to_add:
             box = clamp_box(
                 component_x + part_x,
                 component_y + part_y,
@@ -229,6 +273,7 @@ def split_merged_components(
                     "contour_area": float(part_area),
                     "fill_ratio": float(part_area) / float(max(1, part_w * part_h)),
                     "aspect_ratio": max(part_w, part_h) / float(max(1, min(part_w, part_h))),
+                    "split_group": component_label,
                 }
             )
 
@@ -237,6 +282,60 @@ def split_merged_components(
         candidate.pop("component_label", None)
         candidate.pop("component_bbox", None)
     return split_candidates
+
+
+def _watershed_parts(
+    component_mask: np.ndarray,
+    part_count: int,
+    minimum_piece_area: float,
+) -> List[Tuple[int, int, int, int, int]]:
+    """Split a tightly overlapping component using foreground-derived seeds."""
+
+    foreground = component_mask > 0
+    y_coords, x_coords = np.where(foreground)
+    if len(x_coords) < part_count:
+        return []
+
+    points = np.float32(np.column_stack((x_coords, y_coords)))
+    _, _, centers = cv2.kmeans(
+        points,
+        part_count,
+        None,
+        (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.1),
+        10,
+        cv2.KMEANS_PP_CENTERS,
+    )
+
+    distance = cv2.distanceTransform(component_mask, cv2.DIST_L2, 5)
+    markers = np.zeros(component_mask.shape, dtype=np.int32)
+    markers[~foreground] = 1
+    for marker_id, (center_x, center_y) in enumerate(centers, start=2):
+        x = int(np.clip(round(float(center_x)), 0, component_mask.shape[1] - 1))
+        y = int(np.clip(round(float(center_y)), 0, component_mask.shape[0] - 1))
+        if not foreground[y, x]:
+            foreground_points = np.column_stack(np.where(foreground))
+            nearest = np.argmin(
+                (foreground_points[:, 1] - x) ** 2
+                + (foreground_points[:, 0] - y) ** 2
+            )
+            y, x = (int(value) for value in foreground_points[nearest])
+        markers[y, x] = marker_id
+
+    normalized_distance = cv2.normalize(
+        distance, None, 0, 255, cv2.NORM_MINMAX
+    ).astype(np.uint8)
+    watershed_image = cv2.cvtColor(255 - normalized_distance, cv2.COLOR_GRAY2BGR)
+    watershed_labels = cv2.watershed(watershed_image, markers)
+
+    parts: List[Tuple[int, int, int, int, int]] = []
+    for marker_id in range(2, part_count + 2):
+        ys, xs = np.where(watershed_labels == marker_id)
+        if len(xs) < minimum_piece_area:
+            continue
+        part_x, part_y = int(xs.min()), int(ys.min())
+        part_w, part_h = int(xs.max() - part_x + 1), int(ys.max() - part_y + 1)
+        parts.append((part_x, part_y, part_w, part_h, int(len(xs))))
+    return parts
 
 
 def detect_switches(
@@ -273,7 +372,13 @@ def detect_switches(
     # for a scalar percentile.
     blurred_for_stats = np.asarray(blurred, dtype=np.float64)
     dark_percentile = float(np.percentile(blurred_for_stats, 10.0))
-    dark_threshold = int(min(100.0, max(80.0, dark_percentile + 10.0)))
+    if image.shape[0] <= 900:
+        # Low-resolution scenes have stronger shadows and a darker tray frame.
+        # A lower cutoff keeps adjacent switch bodies from becoming one dark
+        # mass and preserves their separate cores.
+        dark_threshold = int(min(70.0, max(40.0, dark_percentile + 3.0)))
+    else:
+        dark_threshold = int(min(95.0, max(75.0, dark_percentile + 6.0)))
     _, binary = cv2.threshold(
         blurred, dark_threshold, 255, cv2.THRESH_BINARY_INV
     )
@@ -290,6 +395,12 @@ def detect_switches(
     # filters so small, valid objects in the 800px images are not discarded.
     scale = min(image.shape[:2]) / 1080.0
     scaled_min_area = min_area * scale * scale
+    if image.shape[0] > 900:
+        # Small isolated dark fragments (rollers, terminals, and shadows) are
+        # common in the high-resolution scenes but are far below a switch
+        # body.  Keep the lower threshold for 800px scenes where real bodies
+        # are genuinely smaller.
+        scaled_min_area = max(scaled_min_area, 3000.0)
     scaled_min_width = min_width * scale
     scaled_min_height = min_height * scale
     candidates: List[Dict[str, Any]] = []
@@ -301,13 +412,25 @@ def detect_switches(
         # Components touching the working ROI boundary belong to the tray,
         # camera frame, or ROI crop rather than to a switch.  The ROI has a
         # deliberate margin around every supplied switch.
-        if (
+        touches_boundary = (
             x == 0
             or y == 0
             or x + w >= roi.shape[1]
-            or y + h >= roi.shape[0]
-        ):
-            continue
+            or (image.shape[0] <= 900 and y + h >= roi.shape[0])
+        )
+        if touches_boundary:
+            # A low-resolution cluster can touch the left tray edge while
+            # still being a valid group of switches.  Keep only compact,
+            # moderate-size groups; large frame-shaped components remain
+            # rejected.
+            bbox_fraction = float(w * h) / float(max(1, roi.shape[0] * roi.shape[1]))
+            if not (
+                image.shape[0] <= 900
+                and contour_area < 0.06 * roi_area
+                and bbox_fraction < 0.90
+                and max(w, h) / float(max(1, min(w, h))) < 3.0
+            ):
+                continue
         if contour_area < scaled_min_area:
             continue
         if contour_area > max_area_ratio * roi_area:
@@ -364,13 +487,18 @@ def detect_switches(
     candidates.sort(key=lambda d: d["contour_area"], reverse=True)
     kept: List[Dict[str, Any]] = []
     for candidate in candidates:
-        if all(iou(candidate["bbox"], other["bbox"]) < nms_iou for other in kept):
+        if all(
+            candidate.get("split_group") == other.get("split_group")
+            or iou(candidate["bbox"], other["bbox"]) < nms_iou
+            for other in kept
+        ):
             kept.append(candidate)
 
     # Stable presentation order: top-to-bottom, then left-to-right.
     kept.sort(key=lambda d: (d["bbox"][1], d["bbox"][0]))
     for idx, candidate in enumerate(kept, start=1):
         candidate["id"] = idx
+        candidate.pop("split_group", None)
 
     candidates = kept
 
