@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, cast
 
 import cv2
 import numpy as np
@@ -296,15 +296,17 @@ def _watershed_parts(
     if len(x_coords) < part_count:
         return []
 
-    points = np.float32(np.column_stack((x_coords, y_coords)))
-    _, _, centers = cv2.kmeans(
+    points = np.asarray(np.column_stack((x_coords, y_coords)), dtype=np.float32)
+    best_labels = np.empty((len(points), 1), dtype=np.int32)
+    _, _, centers = cast(Any, cv2.kmeans)(
         points,
         part_count,
-        None,
+        best_labels,
         (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.1),
         10,
         cv2.KMEANS_PP_CENTERS,
     )
+    centers = np.asarray(centers, dtype=np.float32)
 
     distance = cv2.distanceTransform(component_mask, cv2.DIST_L2, 5)
     markers = np.zeros(component_mask.shape, dtype=np.int32)
@@ -322,7 +324,11 @@ def _watershed_parts(
         markers[y, x] = marker_id
 
     normalized_distance = cv2.normalize(
-        distance, None, 0, 255, cv2.NORM_MINMAX
+        distance,
+        np.empty_like(distance),
+        0.0,
+        255.0,
+        cv2.NORM_MINMAX,
     ).astype(np.uint8)
     watershed_image = cv2.cvtColor(255 - normalized_distance, cv2.COLOR_GRAY2BGR)
     watershed_labels = cv2.watershed(watershed_image, markers)
