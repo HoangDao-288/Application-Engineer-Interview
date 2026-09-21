@@ -7,20 +7,6 @@ Engineer interview test:
 - Q2: classify one cropped switch as `roller_level` or `no_level`;
 - Q3: inspect detections and classifications interactively in a PyQt5 app.
 
-## Dataset
-
-The interview images are supplied separately and are intentionally excluded
-from Git. Copy them into this layout before running the scripts:
-
-```text
-data/
-├── Part1/       # 30 tray/scene images, including 01.png
-└── Part2-3/     # 101 cropped switch images, 001.png through 101.png
-```
-
-If the supplied folder is named `Application_test_data/`, either rename it to
-`data/` or pass its directories explicitly with `--input` and `--train-dir`.
-
 ## Setup
 
 ```bash
