@@ -1,5 +1,26 @@
 # Application Engineer Interview Assignment
 
+Python solution for the three computer-vision tasks in the Application
+Engineer interview test:
+
+- Q1: detect all microswitches in a Part1 tray scene;
+- Q2: classify one cropped switch as `roller_level` or `no_level`;
+- Q3: inspect detections and classifications interactively in a PyQt5 app.
+
+## Dataset
+
+The interview images are supplied separately and are intentionally excluded
+from Git. Copy them into this layout before running the scripts:
+
+```text
+data/
+├── Part1/       # 30 tray/scene images, including 01.png
+└── Part2-3/     # 101 cropped switch images, 001.png through 101.png
+```
+
+If the supplied folder is named `Application_test_data/`, either rename it to
+`data/` or pass its directories explicitly with `--input` and `--train-dir`.
+
 ## Setup
 
 ```bash
@@ -7,8 +28,6 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
 ```
-
-The supplied interview images must be placed in `data/Part1/`.
 
 ## Question 1: switch contour detection
 
@@ -18,16 +37,12 @@ Run the detector on one image:
 python q1_detect_contours.py --input data/Part1/01.png --output output/q1 --save-mask
 ```
 
-The detector segments dark switch bodies, uses connected components to retain
-objects enclosed by tray contours, and scales its geometric filters for both
-image resolutions in the supplied set. When touching switches form an
-abnormally large connected component, it first uses an area-distribution gap
-to identify the cluster, then adaptively erodes that component. If the
-overlap is too tight for erosion, seeded watershed separates the foreground
-into substantial switch bodies before drawing their boxes. The detector also
-uses resolution-aware tray ROIs and thresholding: low-resolution scenes use a
-tighter tray crop, while high-resolution scenes retain the lower tray edge and
-discard small roller/terminal fragments. Results are written to `output/q1/`.
+The detector combines dark-body segmentation, connected components, geometric
+filtering, and resolution-aware tray regions. Oversized components from
+touching switches are split with adaptive erosion and, when needed, seeded
+watershed. It writes a labelled detection image and a JSON file containing the
+bounding regions; `--save-mask` also writes the processing mask. Bounding
+regions are expanded slightly so the Q2 crop keeps attached roller/lever parts.
 
 ## Question 2: switch type classification
 
@@ -42,8 +57,11 @@ python q2_classify_type.py --train --evaluate
 python q2_classify_type.py --input data/Part2-3/001.png
 ```
 
-The model is saved as `models/q2_hog_svm.joblib`. The second command trains it
-automatically if it has not been created yet.
+The repository includes the trained model at `models/q2_hog_svm.joblib`. If it
+is absent, prediction and Q3 train it automatically from `data/Part2-3/`.
+
+The held-out evaluation splits original images before rotation augmentation,
+avoiding augmented versions of a test image entering the training split.
 
 ## Question 3: interactive desktop application
 
@@ -65,5 +83,16 @@ Scroll the mouse wheel over the image to zoom around the pointer. Hold the
 left mouse button and drag to pan; use **Fit Image** to restore the full-image
 view.
 
-The app explicitly selects PyQt5's Qt platform plugins after importing
-OpenCV, so it avoids the common OpenCV/PyQt `xcb` plugin conflict on Linux.
+The app reuses the public `detect_switches` and `classify_image` APIs from Q1
+and Q2. It also selects PyQt5's Qt platform plugins after importing OpenCV to
+avoid the common OpenCV/PyQt `xcb` plugin conflict on Linux.
+
+## Project files
+
+```text
+q1_detect_contours.py  # Q1 command-line detector
+q2_classify_type.py    # Q2 train, evaluate, and predict command-line tool
+q3_app.py              # Q3 PyQt5 desktop application
+models/q2_hog_svm.joblib
+requirements.txt
+```

@@ -72,6 +72,12 @@ def parse_args() -> argparse.Namespace:
         help="Padding added around each detected box",
     )
     parser.add_argument(
+        "--bbox-expansion",
+        type=float,
+        default=0.12,
+        help="Additional box margin as a fraction of the detected box size",
+    )
+    parser.add_argument(
         "--min-width",
         type=int,
         default=35,
@@ -138,6 +144,27 @@ def clamp_box(
     return x0, y0, x1 - x0, y1 - y0
 
 
+def expand_box(
+    box: List[int],
+    image_shape: Tuple[int, ...],
+    padding: int,
+    expansion_ratio: float,
+) -> List[int]:
+    """Expand a detected body box so attached switch edges remain in the crop."""
+
+    x, y, width, height = box
+    proportional_padding = int(round(min(width, height) * expansion_ratio))
+    expanded = clamp_box(
+        x,
+        y,
+        width,
+        height,
+        image_shape,
+        max(padding, proportional_padding),
+    )
+    return [int(value) for value in expanded]
+
+
 def split_merged_components(
     candidates: List[Dict[str, Any]],
     labels: np.ndarray,
@@ -185,7 +212,11 @@ def split_merged_components(
     split_candidates: List[Dict[str, Any]] = []
     for candidate in candidates:
         candidate_area = float(candidate["contour_area"])
-        split_multiplier = 1.45 if image_shape[0] <= 900 else 1.65
+        # A high-resolution cluster can lose a substantial amount of visible
+        # area where the switches overlap.  Using the largest isolated switch
+        # as the denominator therefore needs a lower cutoff than the old 1.65
+        # multiplier; otherwise the two reported clusters are never split.
+        split_multiplier = 1.45 if image_shape[0] <= 900 else 1.40
         if candidate_area < split_multiplier * largest_normal_area:
             split_candidates.append(candidate)
             continue
@@ -194,8 +225,22 @@ def split_merged_components(
         # switches while avoiding over-splitting large single switches.
         max_split_count = 6 if image_shape[0] <= 900 else 3
         estimated_count = max(2, min(max_split_count, int(round(candidate_area / reference_area))))
-
         component_x, component_y, component_w, component_h = candidate["component_bbox"]
+        component_aspect = max(component_w, component_h) / float(
+            max(1, min(component_w, component_h))
+        )
+        # Three switches arranged around one another can have nearly the same
+        # total dark area as two switches arranged end-to-end.  Their compact,
+        # near-square component is a useful geometric cue that area alone
+        # cannot provide (notably the three-switch cluster in Part1/02.png).
+        if (
+            image_shape[0] > 900
+            and estimated_count == 2
+            and candidate_area >= 1.75 * reference_area
+            and component_aspect <= 1.30
+        ):
+            estimated_count = 3
+
         component_label = int(candidate["component_label"])
         component_mask = (
             labels[
@@ -351,6 +396,7 @@ def detect_switches(
     adaptive_block: int = 51,
     adaptive_c: float = 10.0,
     padding: int = 6,
+    bbox_expansion: float = 0.12,
     min_width: int = 35,
     min_height: int = 30,
     min_fill_ratio: float = 0.08,
@@ -360,6 +406,10 @@ def detect_switches(
 
     if adaptive_block < 3 or adaptive_block % 2 == 0:
         raise ValueError("--adaptive-block must be an odd integer >= 3")
+    if padding < 0:
+        raise ValueError("--padding must be non-negative")
+    if bbox_expansion < 0:
+        raise ValueError("--bbox-expansion must be non-negative")
 
     x0, y0, x1, y1 = get_detection_roi(image)
     roi = image[y0:y1, x0:x1]
@@ -490,11 +540,26 @@ def detect_switches(
         union = aw * ah + bw * bh - intersection
         return intersection / float(max(1, union))
 
+    def containment(box_a: List[int], box_b: List[int]) -> float:
+        """Return the intersection relative to the smaller box area."""
+
+        ax, ay, aw, ah = box_a
+        bx, by, bw, bh = box_b
+        ix1, iy1 = max(ax, bx), max(ay, by)
+        ix2, iy2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+        intersection = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        smaller_area = min(aw * ah, bw * bh)
+        return intersection / float(max(1, smaller_area))
+
     candidates.sort(key=lambda d: d["contour_area"], reverse=True)
     kept: List[Dict[str, Any]] = []
     for candidate in candidates:
         if all(
-            candidate.get("split_group") == other.get("split_group")
+            (
+                candidate.get("split_group") is not None
+                and candidate.get("split_group") == other.get("split_group")
+                and containment(candidate["bbox"], other["bbox"]) < 0.8
+            )
             or iou(candidate["bbox"], other["bbox"]) < nms_iou
             for other in kept
         ):
@@ -507,6 +572,10 @@ def detect_switches(
         candidate.pop("split_group", None)
 
     candidates = kept
+    for candidate in candidates:
+        candidate["bbox"] = expand_box(
+            candidate["bbox"], image.shape, padding, bbox_expansion
+        )
 
     return candidates, binary, (x0, y0, x1, y1)
 
@@ -566,6 +635,7 @@ def main() -> int:
         adaptive_block=args.adaptive_block,
         adaptive_c=args.adaptive_c,
         padding=args.padding,
+        bbox_expansion=args.bbox_expansion,
         min_width=args.min_width,
         min_height=args.min_height,
         min_fill_ratio=args.min_fill_ratio,
